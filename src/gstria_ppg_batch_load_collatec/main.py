@@ -350,20 +350,37 @@ def cli(table, directory, clean):
             fail_count += 1
             logging.error(f"     ❌ 失败")
 
-    # 统计
-    logging.info(f"\n>>> 阶段 4: 统计...")
-    real_time = time.time() - start_total_time
-    logging.info(f"总运行时长: {real_time:.3f}s")
-    logging.info(f"纯 COPY 耗时: {total_pure_copy_duration:.3f}s")
+        # 统计
+        logging.info(f"\n>>> 阶段 4: 统计...")
+        real_time = time.time() - start_total_time
+        logging.info(f"总运行时长: {real_time:.3f}s")
+        logging.info(f"纯 COPY 耗时: {total_pure_copy_duration:.3f}s")
 
-    # 验证
-    try:
-        verify_cmd = build_psql_prefix() + f" -t -c 'SELECT count(1) FROM \"public\".\"{table}\";'"
-        res = run_command(verify_cmd, check=False, capture_output=True)
-        cnt = int(res.stdout.strip()) if res.stdout.strip().isdigit() else -1
-        logging.info(f"数据库最终行数: {cnt}")
-    except:
-        pass
+        # 验证 & 吞吐量计算
+        try:
+            verify_cmd = build_psql_prefix() + f" -t -c 'SELECT count(1) FROM \"public\".\"{table}\";'"
+            res = run_command(verify_cmd, check=False, capture_output=True)
+            cnt = int(res.stdout.strip()) if res.stdout.strip().isdigit() else -1
+            logging.info(f"数据库最终行数: {cnt}")
+
+            # ==================== 新增计算逻辑 ====================
+            if cnt > 0:
+                # 1. 综合吞吐量：总行数 / 脚本总运行时间 (包含索引重建、主键重置等所有开销)
+                # 这是最真实的“业务吞吐量”
+                tps_total = int(cnt / real_time) if real_time > 0 else 0
+
+                # 2. 纯COPY吞吐量：总行数 / 纯数据传输时间
+                # 这代表了网络/磁盘IO的极限性能
+                tps_copy = int(cnt / total_pure_copy_duration) if total_pure_copy_duration > 0 else 0
+
+                logging.info("-" * 30)
+                logging.info(f"平均吞吐量 (Total): {tps_total} rows/s (含索引维护)")
+                logging.info(f"纯COPY吞吐量 (Copy):  {tps_copy} rows/s (仅数据传输)")
+                logging.info("-" * 30)
+            # =====================================================
+
+        except Exception as e:
+            logging.warning(f"统计验证出错: {e}")
 
 
 if __name__ == "__main__":
