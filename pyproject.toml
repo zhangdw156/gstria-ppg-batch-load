@@ -16,6 +16,8 @@ gstria-ppg-batch-load = "gstria_ppg_batch_load.main:cli"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# =============== 新增部分 ===============
 [tool.hatch.build.targets.wheel]
-packages = ["src/gstria_ppg_batch_load"]
+packages = [
+    "src/gstria_ppg_batch_load",
+    "src/gstria_ppg_batch_load_collatec",
+]
