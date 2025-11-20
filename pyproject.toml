@@ -1,0 +1,17 @@
+[project]
+name = "gstria-ppg-batch-load"
+version = "0.1.0"
+description = "Batch load .tbl files into PostgreSQL with partition handling"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "click>=8.1.7",
+    "python-dotenv>=1.0.1",
+]
+
+[project.scripts]
+gstria-ppg-batch-load = "gstria_ppg_batch_load.main:cli"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
