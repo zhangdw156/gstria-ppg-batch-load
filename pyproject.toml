@@ -11,6 +11,7 @@ dependencies = [
 
 [project.scripts]
 gstria-ppg-batch-load = "gstria_ppg_batch_load.main:cli"
+gstria-ppg-batch-load-collatec = "gstria_ppg_batch_load_collatec.main:cli"
 
 [build-system]
 requires = ["hatchling"]
