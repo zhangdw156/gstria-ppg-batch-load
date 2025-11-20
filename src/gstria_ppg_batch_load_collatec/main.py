@@ -185,18 +185,16 @@ def restore_indexes(restore_sqls):
         raise e
 
 
-# ==================== 核心导入函数 (极致速度版) ====================
+# ==================== 核心导入函数 (极致速度 + Shell 内部计时版) ====================
 def import_single_file_with_lock(file_path, table_base_name):
     """
     流程：
-    1. 获取分区名 (Python)
-    2. 备份并删除辅助索引 (Python)
-    3. 重置主键 (Python)
-    4. 执行 COPY (Shell Pipeline) -> 极致速度
-    5. 恢复辅助索引 (Python)
+    1. 获取分区名
+    2. 索引/主键处理
+    3. 执行 COPY (Shell Pipeline + Shell In-band Timing)
+    4. 恢复索引
 
     返回: (CompletedProcess, pure_copy_duration)
-    注意：为了速度，此函数不再统计行数，行数验证依赖最后的 Count(*)
     """
 
     # --- 步骤 1: 获取动态分区表名 ---
@@ -219,30 +217,25 @@ def import_single_file_with_lock(file_path, table_base_name):
     stored_index_sqls = []
     try:
         stored_index_sqls = backup_and_drop_indexes(partition_name)
-        reset_primary_key(partition_name)  # Step 1.6
+        reset_primary_key(partition_name)
     except Exception as e:
-        # 尝试恢复环境
         try:
             restore_indexes(stored_index_sqls)
         except:
             pass
         return subprocess.CompletedProcess(args="index_opt", returncode=1, stderr=str(e)), 0.0
 
-    # --- 步骤 3: 极致速度导入 (Shell Pipeline) ---
+    # --- 步骤 3: 极致速度导入 (Shell Pipeline + Internal Timing) ---
     logging.info(f"      [Import] 开始 Shell 管道高速导入...")
 
     lock_table_name = f'"{table_base_name}_wa"'
-    # COPY 选项
     copy_options = "WITH (FORMAT text, DELIMITER E'|', NULL E'')"
     copy_cmd_str = f"COPY public.{partition_name}(fid,geom,dtg,taxi_id) FROM STDIN {copy_options};"
 
-    # 安全地引用文件路径
     safe_file_path = shlex.quote(str(file_path))
 
-    # 构建复合 Shell 命令
-    # 利用 tail -c 1 智能判断是否补全换行符
-    # 整个命令被包在 () 里通过管道传给 psql
-    shell_pipeline = (
+    # 构建核心业务管道
+    core_pipeline = (
         f"("
         f"echo 'BEGIN;';"
         f"echo 'LOCK TABLE public.{lock_table_name} IN SHARE UPDATE EXCLUSIVE MODE;';"
@@ -254,19 +247,40 @@ def import_single_file_with_lock(file_path, table_base_name):
         f") | {build_psql_prefix(interactive=True)} -q -v ON_ERROR_STOP=1"
     )
 
+    # 【关键修改】在 Shell 内部包裹一层计时逻辑
+    # 使用 date +%s.%N 获取纳秒级时间戳
+    # 将时间信息写入 stderr (>&2)，以免干扰 stdout (虽然 psql -q 不太会有输出)
+    timed_shell_cmd = (
+        f"ts_start=$(date +%s.%N); "  # 1. 记录 Shell 启动时刻
+        f"{core_pipeline}; "  # 2. 执行核心管道
+        f"exit_code=$?; "  # 3. 捕获退出码
+        f"ts_end=$(date +%s.%N); "  # 4. 记录 Shell 结束时刻
+        f"echo \"TIME_METRIC:$ts_start:$ts_end\" >&2; "  # 5. 输出时间标记到 stderr
+        f"exit $exit_code"  # 6. 返回原始退出码
+    )
+
     copy_duration = 0.0
 
     try:
-        t_start = time.time()
+        # 执行命令 (这里 Python 只是个触发器，不负责计时)
+        result = run_command(timed_shell_cmd, check=False, capture_output=True)
 
-        # 直接执行 Shell 命令，不经过 Python 的 read/write 循环
-        result = run_command(shell_pipeline, check=False, capture_output=True)
-
-        t_end = time.time()
-        copy_duration = t_end - t_start
+        # 解析 Shell 返回的精确时间
+        if result.stderr:
+            for line in result.stderr.splitlines():
+                if "TIME_METRIC:" in line:
+                    try:
+                        # 格式: TIME_METRIC:171000000.123:171000001.456
+                        _, t_start, t_end = line.split(":")
+                        copy_duration = float(t_end) - float(t_start)
+                        # 从 stderr 中移除这一行，保持日志干净 (可选)
+                        # result.stderr = result.stderr.replace(line, "")
+                    except ValueError:
+                        logging.warning("无法解析 Shell 时间戳，回退到 Python 计时")
+                        pass
 
         if result.returncode != 0:
-            raise subprocess.CalledProcessError(result.returncode, shell_pipeline, output=result.stdout,
+            raise subprocess.CalledProcessError(result.returncode, timed_shell_cmd, output=result.stdout,
                                                 stderr=result.stderr)
 
     except Exception as e:
@@ -274,7 +288,6 @@ def import_single_file_with_lock(file_path, table_base_name):
         if hasattr(e, 'stderr') and e.stderr:
             logging.error(f"      -> 输出: {e.stderr.strip()}")
 
-        # 尝试恢复索引
         try:
             restore_indexes(stored_index_sqls)
         except:
