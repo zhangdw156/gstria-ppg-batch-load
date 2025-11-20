@@ -64,20 +64,15 @@ def run_sql_command(sql, fetch_output=False):
     return run_command(cmd, capture_output=fetch_output)
 
 
-# ==================== 索引管理函数 (核心修改: 实现泛化性) ====================
+# ==================== 索引管理函数 ====================
 
 def backup_and_drop_indexes(partition_name_quoted):
     """
-    1. 查询所有非主键索引的定义 (CREATE INDEX 语句)。
-    2. 将其保存到列表。
-    3. 删除这些索引。
-    返回: list[str] (重建索引的SQL语句列表)
+    备份并删除非主键索引
     """
     partition_name_pure = partition_name_quoted.replace('"', '')
     logging.info(f"      [Index Backup & Drop] 正在分析 {partition_name_quoted} 的索引...")
 
-    # 关键 SQL: 同时获取 索引名 和 完整的定义语句(pg_get_indexdef)
-    # indisprimary = 'f' 排除主键
     backup_sql = (
         f"SELECT i.relname, pg_get_indexdef(ix.indexrelid) "
         f"FROM pg_index ix "
@@ -92,15 +87,6 @@ def backup_and_drop_indexes(partition_name_quoted):
     restore_sqls = []
 
     try:
-        # 获取输出，每行格式: index_name|create_index_statement
-        # 既然用了 -tA，默认分隔符是 |。但 create 语句里可能有 |，所以我们只取名字，语句再单独查或者解析
-        # 为了安全，我们使用 python split，或者直接查定义。
-        # 这里简化逻辑：pg_get_indexdef 返回的就是完整的 CREATE INDEX 语句
-
-        # 为了稳妥处理包含特殊字符的情况，我们这里只取 indexrelid 然后再用 pg_get_indexdef
-        # 实际上上面的 SQL 直接返回两列，中间用 | 分隔可能会有问题。
-        # 改良方案：只查 indexname 和 definition，手动处理分隔
-
         cmd_result = run_sql_command(backup_sql, fetch_output=True)
         lines = [line for line in cmd_result.stdout.strip().split('\n') if line]
 
@@ -109,8 +95,6 @@ def backup_and_drop_indexes(partition_name_quoted):
             return []
 
         for line in lines:
-            # psql -tA 默认用 | 分隔列。indexname 不会包含 |，但 definition 可能包含。
-            # 所以我们需要 split 第一个 |
             parts = line.split('|', 1)
             if len(parts) < 2:
                 continue
@@ -118,11 +102,9 @@ def backup_and_drop_indexes(partition_name_quoted):
             idx_name = parts[0]
             idx_def = parts[1]
 
-            # 保存重建语句 (加上 ; 结束符)
             restore_sqls.append(f"{idx_def};")
 
             logging.info(f"      -> Backup & Dropping: {idx_name}")
-            # 删除索引
             run_sql_command(f"DROP INDEX IF EXISTS \"public\".\"{idx_name}\";")
 
         logging.info(f"      -> 已备份并删除 {len(restore_sqls)} 个辅助索引。")
@@ -135,7 +117,7 @@ def backup_and_drop_indexes(partition_name_quoted):
 
 def restore_indexes(restore_sqls):
     """
-    执行之前备份的 CREATE INDEX 语句
+    恢复索引
     """
     if not restore_sqls:
         return
@@ -143,10 +125,7 @@ def restore_indexes(restore_sqls):
     logging.info(f"      [Index Restore] 正在恢复 {len(restore_sqls)} 个辅助索引...")
     try:
         for sql in restore_sqls:
-            # 从 SQL 中提取索引名用于日志显示 (可选)
-            logging.info(f"      -> Executing Restore SQL...")
-            # 加上 IF NOT EXISTS 防止意外 (虽然 pg_get_indexdef 不带这个，但重建时通常是安全的)
-            # 注意：pg_get_indexdef 返回的是标准 CREATE INDEX，我们直接执行即可
+            # logging.info(f"      -> Executing Restore SQL...") # 减少刷屏
             run_sql_command(sql)
         logging.info("      -> 辅助索引恢复完毕。")
     except Exception as e:
@@ -157,13 +136,9 @@ def restore_indexes(restore_sqls):
 # ==================== 核心导入函数 ====================
 def import_single_file_with_lock(file_path, table_base_name):
     """
-    处理单个文件的完整流程：
-    1. 获取分区名
-    2. 备份并删除所有辅助索引 (泛化)
-    3. COPY 导入数据 (带锁)
-    4. 恢复备份的索引
+    处理单个文件的完整流程。
 
-    返回: (CompletedProcess, row_count)
+    返回: (CompletedProcess, row_count, pure_copy_duration)
     """
 
     # --- 步骤 1: 获取动态分区表名 ---
@@ -180,17 +155,16 @@ def import_single_file_with_lock(file_path, table_base_name):
         logging.info(f"      -> 动态获取分区表名: {partition_name}")
     except Exception as e:
         logging.error(f"      -> 获取分区表名失败: {e}")
-        return subprocess.CompletedProcess(args="get_partition", returncode=1, stderr=str(e)), 0
+        return subprocess.CompletedProcess(args="get_partition", returncode=1, stderr=str(e)), 0, 0.0
 
-    # --- 步骤 2: 备份并删除辅助索引 (通用方案) ---
+    # --- 步骤 2: 备份并删除辅助索引 ---
     stored_index_sqls = []
     try:
-        # 这里返回的是 SQL 语句列表
         stored_index_sqls = backup_and_drop_indexes(partition_name)
     except Exception as e:
-        return subprocess.CompletedProcess(args="drop_index", returncode=1, stderr=str(e)), 0
+        return subprocess.CompletedProcess(args="drop_index", returncode=1, stderr=str(e)), 0, 0.0
 
-    # --- 步骤 3: 使用 Popen 进行数据传输 ---
+    # --- 步骤 3: 使用 Popen 进行数据传输 (计时重点区域) ---
     logging.info(f"      [Import] 开始数据导入事务...")
     lock_table_name = f'"{table_base_name}_wa"'
     copy_options = "WITH (FORMAT text, DELIMITER E'|', NULL E'')"
@@ -208,8 +182,12 @@ def import_single_file_with_lock(file_path, table_base_name):
 
     proc = None
     rows_in_file = 0
+    copy_duration = 0.0  # 初始化纯复制耗时
 
     try:
+        # ========== 计时开始 (仅统计 COPY 过程) ==========
+        t_start_copy = time.time()
+
         proc = subprocess.Popen(
             psql_cmd,
             shell=True,
@@ -235,6 +213,11 @@ def import_single_file_with_lock(file_path, table_base_name):
         proc.stdin.write(sql_footer)
 
         stdout_bytes, stderr_bytes = proc.communicate()
+
+        # ========== 计时结束 ==========
+        t_end_copy = time.time()
+        copy_duration = t_end_copy - t_start_copy
+
         stdout_str = stdout_bytes.decode('utf-8', errors='replace')
         stderr_str = stderr_bytes.decode('utf-8', errors='replace')
 
@@ -246,25 +229,24 @@ def import_single_file_with_lock(file_path, table_base_name):
         logging.error(error_msg)
         if proc:
             proc.kill()
-        # 即使导入失败，理论上也应该尝试恢复索引，否则下次运行会因为没索引而困惑？
-        # 但通常事务回滚了，索引删除操作在 Python 侧是自动提交的吗？
-        # 注意：drop_auxiliary_indexes 里的 run_sql_command 是独立的事务。
-        # 所以如果这里 COPY 失败，索引已经被删了。
-        # 为了安全起见，这里尝试恢复索引
+        # 尝试恢复索引
         try:
             logging.warning("      -> 导入失败，尝试恢复索引...")
             restore_indexes(stored_index_sqls)
         except:
             pass
-        return subprocess.CompletedProcess(args=psql_cmd, returncode=1, stderr=error_msg), 0
+        # 失败时，copy_duration 可能不准确或为0
+        return subprocess.CompletedProcess(args=psql_cmd, returncode=1, stderr=error_msg), 0, copy_duration
 
-    # --- 步骤 4: 恢复索引 (通用方案) ---
+    # --- 步骤 4: 恢复索引 ---
     try:
         restore_indexes(stored_index_sqls)
     except Exception as e:
-        return subprocess.CompletedProcess(args="restore_index", returncode=1, stderr=str(e)), rows_in_file
+        return subprocess.CompletedProcess(args="restore_index", returncode=1,
+                                           stderr=str(e)), rows_in_file, copy_duration
 
-    return subprocess.CompletedProcess(args=psql_cmd, returncode=0, stdout=stdout_str, stderr=stderr_str), rows_in_file
+    return subprocess.CompletedProcess(args=psql_cmd, returncode=0, stdout=stdout_str,
+                                       stderr=stderr_str), rows_in_file, copy_duration
 
 
 # ==================== Click 命令行入口 ====================
@@ -274,7 +256,7 @@ def import_single_file_with_lock(file_path, table_base_name):
               help="TBL 文件所在目录")
 @click.option('--clean/--no-clean', default=True, help="是否在导入前清空目标表 (默认清空)")
 def cli(table, directory, clean):
-    """批量导入 .tbl 工具 (自动统计行数 + 泛化索引优化版)"""
+    """批量导入 .tbl 工具 (优化版: 独立计算 COPY 耗时)"""
     setup_logging()
     tbl_dir = Path(directory)
 
@@ -306,25 +288,34 @@ def cli(table, directory, clean):
     logging.info(f"\n>>> 阶段 3: 开始循环导入 (Auto Index Backup & Restore)...")
     success_count = 0
     fail_count = 0
-    total_import_duration = 0.0
+
+    # 统计纯 COPY 的总耗时
+    total_pure_copy_duration = 0.0
     total_rows_imported = 0
 
     for i, file_path in enumerate(tbl_files, 1):
         filename = file_path.name
         logging.info(f"  -> ({i}/{total_files}) 正在处理: {filename} ... ")
 
-        import_start = time.time()
-        result, row_count = import_single_file_with_lock(file_path, table)
-        import_end = time.time()
+        # 这是包含索引操作的总时间 (Wall Clock Time)
+        process_start = time.time()
 
-        import_duration = import_end - import_start
+        # 调用核心函数，获取 pure_copy_duration
+        result, row_count, pure_copy_duration = import_single_file_with_lock(file_path, table)
+
+        process_end = time.time()
+        process_duration = process_end - process_start
 
         if result.returncode == 0:
             success_count += 1
-            total_import_duration += import_duration
+            total_pure_copy_duration += pure_copy_duration
             total_rows_imported += row_count
-            speed = int(row_count / import_duration) if import_duration > 0 else 0
-            logging.info(f"     ✅ 成功 (耗时: {import_duration:.2f}s | 行数: {row_count} | 速度: {speed}/s)")
+
+            # 计算速度时，只使用 pure_copy_duration
+            speed = int(row_count / pure_copy_duration) if pure_copy_duration > 0 else 0
+
+            logging.info(
+                f"     ✅ 成功 (纯COPY耗时: {pure_copy_duration:.2f}s | 总耗时: {process_duration:.2f}s | 行数: {row_count} | 速度: {speed}/s)")
         else:
             fail_count += 1
             logging.error(f"     ❌ 失败: {filename}")
@@ -334,7 +325,19 @@ def cli(table, directory, clean):
     # 报告
     logging.info(f"\n>>> 阶段 4: 统计...")
     logging.info("-" * 30)
-    logging.info(f"总耗时: {time.time() - start_total_time:.3f}s | 成功: {success_count} | 失败: {fail_count}")
+
+    real_total_time = time.time() - start_total_time
+    logging.info(f"脚本运行时长(含索引开销): {real_total_time:.3f}s | 成功: {success_count} | 失败: {fail_count}")
+
+    logging.info("-" * 30)
+    logging.info(f"成功导入总行数: {total_rows_imported}")
+    logging.info(f"纯 COPY 总耗时: {total_pure_copy_duration:.3f}s")
+
+    if success_count > 0 and total_pure_copy_duration > 0:
+        avg_throughput = int(total_rows_imported / total_pure_copy_duration)
+        logging.info(f"整体纯导入吞吐量: {avg_throughput} 条/秒")
+
+    logging.info("-" * 30)
 
     # 验证
     verify_cmd = build_psql_prefix(interactive=False) + f" -t -c 'SELECT count(1) FROM \"public\".\"{table}\";'"
