@@ -3,18 +3,22 @@ import sys
 import time
 import logging
 import click
-import re  # 新增: 用于提取分区号数字
+import re
 import swanlab
 from pathlib import Path
-from .config import setup_logging
+from .config import setup_logging, SWANLAB_ENV_SETTINGS
 from .utils import run_sql_command, run_command, build_psql_prefix
 from .loader import import_single_file_with_lock
+from .db_ops import update_cron_jobs
 
 
 def run_main_logic(table, directory, clean, enable_pk_reset):
     """通用业务逻辑控制器"""
     setup_logging()
+
+    # 更新定时任务
     update_cron_jobs(table)
+
     tbl_dir = Path(directory)
     mode_name = "Collatec Mode" if enable_pk_reset else "Standard Mode"
     full_mode_desc = "Collatec Mode (含主键重置)" if enable_pk_reset else "Standard Mode (基础模式)"
@@ -25,22 +29,31 @@ def run_main_logic(table, directory, clean, enable_pk_reset):
     logging.info("=" * 60)
 
     # ==========================
-    # SwanLab 初始化
+    # SwanLab 配置构建
     # ==========================
+
+    # 1. 基础运行配置
+    run_config = {
+        "Task/Table_Name": table,
+        "Task/Data_Directory": str(directory),
+        "Task/Clean_Start": clean,
+        "Task/Enable_PK_Reset": enable_pk_reset,
+        "Task/Mode": mode_name
+    }
+
+    # 2. 合并环境变量配置 (除去密码)
+    run_config.update(SWANLAB_ENV_SETTINGS)
+
+    # 3. 初始化
     swanlab.init(
         project="PG-Batch-Load-Monitor",
         experiment_name=f"{table}_{time.strftime('%Y%m%d_%H%M%S')}",
         description=f"Importing data into {table} using {mode_name}",
-        config={
-            "table_name": table,
-            "data_directory": str(directory),
-            "clean_start": clean,
-            "enable_pk_reset": enable_pk_reset,
-            "mode": mode_name
-        }
+        config=run_config
     )
 
     if clean:
+        # ... (后续代码保持完全一致，不需要修改) ...
         logging.info(f"\n>>> 阶段 1: 清空表 '{table}'...")
         try:
             run_sql_command(f"DELETE FROM \"public\".\"{table}\";")
@@ -64,7 +77,7 @@ def run_main_logic(table, directory, clean, enable_pk_reset):
         logging.info(f"  -> ({i}/{len(tbl_files)}) {fpath.name}")
         p_start = time.time()
 
-        # === 调用 Loader，获取结果和指标字典 ===
+        # === 调用 Loader ===
         res, metrics = import_single_file_with_lock(fpath, table, enable_pk_reset=enable_pk_reset)
 
         file_process_time = time.time() - p_start
@@ -75,7 +88,6 @@ def run_main_logic(table, directory, clean, enable_pk_reset):
         # SwanLab Logging
         # ==========================
 
-        # 基础耗时指标
         log_payload = {
             "Time/Total_Process": file_process_time,
             "Time/Drop_Index": metrics.get("time_drop_index", 0.0),
@@ -84,21 +96,13 @@ def run_main_logic(table, directory, clean, enable_pk_reset):
             "Status": 1 if res.returncode == 0 else 0
         }
 
-        # 记录主键重置时间（如果在该模式下）
         if enable_pk_reset:
             log_payload["Time/Reset_PK"] = metrics.get("time_reset_pk", 0.0)
 
-        # === 新增: 记录分区表信息 ===
-
-        # 1. 记录文本信息 (在 SwanLab 面板的 Media/Text 栏查看)
-        # 去掉表名的双引号以便阅读
         clean_part_name = partition_name.replace('"', '')
         log_payload["Info/Partition_Name"] = swanlab.Text(clean_part_name, caption=f"File: {fpath.name}")
 
-        # 2. 尝试提取数字后缀画折线图 (例如 performance_wa_005 -> 5)
-        # 这会在图表中形成一个漂亮的阶梯状曲线，显示数据分布的切换点
         try:
-            # 匹配字符串末尾的数字
             match = re.search(r'(\d+)$', clean_part_name)
             if match:
                 part_idx = int(match.group(1))
@@ -106,7 +110,6 @@ def run_main_logic(table, directory, clean, enable_pk_reset):
         except:
             pass
 
-        # 发送日志
         swanlab.log(log_payload, step=i)
 
         if res.returncode == 0:
@@ -135,7 +138,6 @@ def run_main_logic(table, directory, clean, enable_pk_reset):
             if total_copy_time > 0:
                 logging.info(f"纯COPY吞吐量 (Copy):  {throughput_copy} rows/s")
 
-        # 记录汇总
         swanlab.log({
             "Summary/Total_Rows": cnt,
             "Summary/Throughput_Global": throughput_total,
