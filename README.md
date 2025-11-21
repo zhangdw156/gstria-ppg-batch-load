@@ -57,7 +57,12 @@ PG_HOST=localhost
 PG_PORT=5432
 
 # 运行模式选择:
-PG_CONTAINER_NAME=my-postgis-container
+# PG_CONTAINER_NAME=my-postgis-container
+
+# 定时任务执行时间设置
+# CRON_SCHEDULE_ROLL_WA=*/3 * * * *
+# CRON_SCHEDULE_MAINTENANCE=*/30 * * * *
+
 ```
 
 ### 5. 运行模式与命令
