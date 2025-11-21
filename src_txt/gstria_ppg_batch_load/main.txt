@@ -14,7 +14,6 @@ from .loader import import_single_file_with_lock
 def run_main_logic(table, directory, clean, enable_pk_reset):
     """通用业务逻辑控制器"""
     setup_logging()
-    update_cron_jobs(table)
     tbl_dir = Path(directory)
     mode_name = "Collatec Mode" if enable_pk_reset else "Standard Mode"
     full_mode_desc = "Collatec Mode (含主键重置)" if enable_pk_reset else "Standard Mode (基础模式)"

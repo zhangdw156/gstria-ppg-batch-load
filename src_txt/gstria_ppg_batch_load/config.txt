@@ -10,12 +10,13 @@ load_dotenv()
 # ==================== 配置获取 ====================
 DB_USER = os.getenv("PG_USER", "postgres")
 DB_NAME = os.getenv("PG_DB", "postgres")
+
+# 新增 Host 和 Port 配置
 PG_HOST = os.getenv("PG_HOST", "localhost")
 PG_PORT = os.getenv("PG_PORT", "5432")
 DB_PASSWORD = os.getenv("PG_PASSWORD", "")
-CONTAINER_NAME = os.getenv("PG_CONTAINER_NAME", "")
-CRON_SCHEDULE_ROLL_WA = os.getenv("CRON_SCHEDULE_ROLL_WA", "")
-CRON_SCHEDULE_MAINTENANCE = os.getenv("CRON_SCHEDULE_MAINTENANCE", "")
+CONTAINER_NAME = os.getenv("PG_CONTAINER_NAME", "")  # 默认为空字符串
+
 
 def setup_logging():
     log_dir = Path("logs")

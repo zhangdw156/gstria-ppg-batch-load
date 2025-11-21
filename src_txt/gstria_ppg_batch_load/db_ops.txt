@@ -2,7 +2,6 @@ import time
 import logging
 from .utils import run_sql_command
 
-
 def get_partition_name(table_base_name):
     sql = (f"SELECT '\"{table_base_name}_wa_' || lpad(value::text, 3, '0') || '\"' "
            f"FROM \"public\".\"geomesa_wa_seq\" WHERE type_name = '{table_base_name}'")
@@ -14,7 +13,6 @@ def get_partition_name(table_base_name):
     except Exception as e:
         logging.error(f"      -> Get Partition Failed: {e}")
         raise e
-
 
 def backup_and_drop_indexes(partition_name_quoted):
     pure_name = partition_name_quoted.replace('"', '')
@@ -41,7 +39,6 @@ def backup_and_drop_indexes(partition_name_quoted):
         logging.error(f"      -> Index Ops Failed: {e}")
         raise e
 
-
 def reset_primary_key(partition_name_quoted):
     """Step 1.6: 仅在 Collatec 模式下调用"""
     pure_name = partition_name_quoted.replace('"', '')
@@ -57,11 +54,10 @@ def reset_primary_key(partition_name_quoted):
         run_sql_command(f"ALTER TABLE \"public\".\"{pure_name}\" DROP CONSTRAINT IF EXISTS \"{pk_name}\";")
         t0 = time.time()
         run_sql_command(f"ALTER TABLE \"public\".\"{pure_name}\" ADD CONSTRAINT \"{pk_name}\" {pk_def};")
-        logging.info(f"      -> 主键重建完成 (耗时: {time.time() - t0:.2f}s)。")
+        logging.info(f"      -> 主键重建完成 (耗时: {time.time()-t0:.2f}s)。")
     except Exception as e:
         logging.error(f"      -> PKey Reset Failed: {e}")
         raise e
-
 
 def restore_indexes(restore_sqls):
     if not restore_sqls: return
@@ -71,39 +67,3 @@ def restore_indexes(restore_sqls):
     except Exception as e:
         logging.error(f"      -> Restore Failed: {e}")
         raise e
-
-
-def update_cron_jobs(table_base_name):
-    """
-    根据 .env 配置更新 pg_cron 的调度时间
-    注意 jobname 的命名规则:
-    1. {table}-roll-wa
-    2. {table}_partition_maintenance
-    """
-    logging.info(">>> 检查定时任务配置...")
-
-    # 1. 更新 roll-wa 任务
-    if CRON_SCHEDULE_ROLL_WA:
-        job_name = f"{table_base_name}-roll-wa"
-        logging.info(f"   -> 更新 Cron Job '{job_name}' Schedule 为: {CRON_SCHEDULE_ROLL_WA}")
-        sql = (f"UPDATE cron.job SET schedule = '{CRON_SCHEDULE_ROLL_WA}' "
-               f"WHERE jobname = '{job_name}';")
-        try:
-            run_sql_command(sql)
-        except Exception as e:
-            logging.warning(f"   -> 更新失败 (可能缺少权限或表不存在): {e}")
-    else:
-        logging.info(f"   -> 跳过更新 {table_base_name}-roll-wa (配置为空)")
-
-    # 2. 更新 partition_maintenance 任务
-    if CRON_SCHEDULE_MAINTENANCE:
-        job_name = f"{table_base_name}_partition_maintenance"
-        logging.info(f"   -> 更新 Cron Job '{job_name}' Schedule 为: {CRON_SCHEDULE_MAINTENANCE}")
-        sql = (f"UPDATE cron.job SET schedule = '{CRON_SCHEDULE_MAINTENANCE}' "
-               f"WHERE jobname = '{job_name}';")
-        try:
-            run_sql_command(sql)
-        except Exception as e:
-            logging.warning(f"   -> 更新失败: {e}")
-    else:
-        logging.info(f"   -> 跳过更新 {table_base_name}_partition_maintenance (配置为空)")
