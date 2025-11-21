@@ -1,6 +1,7 @@
 import time
 import logging
 from .utils import run_sql_command
+from .config import CRON_SCHEDULE_ROLL_WA, CRON_SCHEDULE_MAINTENANCE
 
 
 def get_partition_name(table_base_name):
