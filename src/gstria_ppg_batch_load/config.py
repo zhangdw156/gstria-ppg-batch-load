@@ -14,7 +14,7 @@ DB_NAME = os.getenv("PG_DB", "postgres")
 # 新增 Host 和 Port 配置
 PG_HOST = os.getenv("PG_HOST", "localhost")
 PG_PORT = os.getenv("PG_PORT", "5432")
-
+DB_PASSWORD = os.getenv("PG_PASSWORD", "")
 CONTAINER_NAME = os.getenv("PG_CONTAINER_NAME", "")  # 默认为空字符串
 
 

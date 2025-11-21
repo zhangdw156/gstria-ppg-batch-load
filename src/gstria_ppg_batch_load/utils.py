@@ -2,7 +2,7 @@ import subprocess
 import shlex
 import logging
 import os
-from .config import DB_USER, DB_NAME, CONTAINER_NAME, PG_HOST, PG_PORT
+from .config import DB_USER, DB_NAME, CONTAINER_NAME, PG_HOST, PG_PORT, DB_PASSWORD
 
 
 def build_psql_prefix(interactive=False):
@@ -30,6 +30,11 @@ def run_command(cmd, check=True, capture_output=False, env=None):
     # 如果没有传入 env，默认使用当前系统环境变量
     run_env = env if env is not None else os.environ.copy()
 
+    if DB_PASSWORD:
+        run_env["PGPASSWORD"] = DB_PASSWORD
+
+
+
     try:
         result = subprocess.run(
             cmd,
@@ -37,7 +42,7 @@ def run_command(cmd, check=True, capture_output=False, env=None):
             check=check,
             capture_output=capture_output,
             text=True,
-            env=run_env  # <--- 关键修改：传入环境变量
+            env=run_env
         )
         return result
     except subprocess.CalledProcessError as e:
