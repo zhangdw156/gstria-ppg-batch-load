@@ -87,7 +87,7 @@ uv run gstria-ppg-batch-load -f <table_name> -d <tbl_directory>
 
 命令: gstria-ppg-batch-load-collatec
 
-在标准模式的基础上，增加了 步骤 1.6：主键重置（先删除主键约束，导入后立即重建主键）。
+在标准模式的基础上，在导入数据之前重建主键索引。
 
 适用于需要通过重建主键来整理碎片、优化存储或解决特定约束冲突的场景。
 
