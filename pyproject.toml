@@ -22,5 +22,4 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = [
     "src/gstria_ppg_batch_load",
-    # 注意：删除了 gstria_ppg_batch_load_collatec，因为源码已经合并
 ]
