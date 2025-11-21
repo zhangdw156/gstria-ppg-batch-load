@@ -10,8 +10,10 @@ dependencies = [
 ]
 
 [project.scripts]
-gstria-ppg-batch-load = "gstria_ppg_batch_load.main:cli"
-gstria-ppg-batch-load-collatec = "gstria_ppg_batch_load_collatec.main:cli"
+# 基础命令 -> 指向 main.py 中的 cli_standard 函数
+gstria-ppg-batch-load = "gstria_ppg_batch_load.main:cli_standard"
+# Collatec 命令 -> 指向 main.py 中的 cli_collatec 函数
+gstria-ppg-batch-load-collatec = "gstria_ppg_batch_load.main:cli_collatec"
 
 [build-system]
 requires = ["hatchling"]
@@ -20,5 +22,5 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = [
     "src/gstria_ppg_batch_load",
-    "src/gstria_ppg_batch_load_collatec",
+    # 注意：删除了 gstria_ppg_batch_load_collatec，因为源码已经合并
 ]
