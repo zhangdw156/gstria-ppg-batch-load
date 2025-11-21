@@ -1,7 +1,7 @@
 import subprocess
 import shlex
 import logging
-import time  # 引入 time 模块
+import time
 from .utils import run_command, build_psql_prefix
 from .db_ops import get_partition_name, backup_and_drop_indexes, reset_primary_key, restore_indexes
 
@@ -9,47 +9,35 @@ from .db_ops import get_partition_name, backup_and_drop_indexes, reset_primary_k
 def import_single_file_with_lock(file_path, table_base_name, enable_pk_reset=False):
     """
     修改后：返回 (CompletedProcess, metrics_dict)
-    metrics_dict 包含:
-    - time_drop_index
-    - time_reset_pk
-    - time_copy
-    - time_restore_index
-    - time_total_process
     """
 
-    # 初始化指标字典 (默认为 0)
+    # 初始化指标字典
     metrics = {
         "time_drop_index": 0.0,
         "time_reset_pk": 0.0,
         "time_copy": 0.0,
         "time_restore_index": 0.0,
-        "partition_name": ""
+        "partition_name": "N/A"  # 确保有默认值
     }
-
-    process_start_time = time.time()
 
     # --- 步骤 1: 获取动态分区表名 ---
     try:
         partition_name = get_partition_name(table_base_name)
-        metrics["partition_name"] = partition_name
+        metrics["partition_name"] = partition_name  # <--- 关键点：这里存入字典
     except Exception as e:
         return subprocess.CompletedProcess("part", 1, stderr=str(e)), metrics
 
     # --- 步骤 2: 索引处理 ---
     stored_index_sqls = []
     try:
-        # === 计时: 删除索引 ===
         t_start = time.time()
         stored_index_sqls = backup_and_drop_indexes(partition_name)
         metrics["time_drop_index"] = time.time() - t_start
 
-        # === 差异化逻辑: Collatec 模式下重置主键 ===
         if enable_pk_reset:
-            # === 计时: 重置主键 ===
             t_start = time.time()
             reset_primary_key(partition_name)
             metrics["time_reset_pk"] = time.time() - t_start
-        # ========================================
     except Exception as e:
         try:
             restore_indexes(stored_index_sqls)
@@ -92,7 +80,6 @@ def import_single_file_with_lock(file_path, table_base_name, enable_pk_reset=Fal
     try:
         result = run_command(timed_shell_cmd, check=False, capture_output=True)
 
-        # 解析 Shell 返回的精确时间
         if result.stderr:
             for line in result.stderr.splitlines():
                 if "TIME_METRIC:" in line:
@@ -100,10 +87,8 @@ def import_single_file_with_lock(file_path, table_base_name, enable_pk_reset=Fal
                         _, t_start, t_end = line.split(":")
                         copy_duration = float(t_end) - float(t_start)
                     except ValueError:
-                        logging.warning("无法解析 Shell 时间戳")
                         pass
 
-        # === 记录: Copy 时间 ===
         metrics["time_copy"] = copy_duration
 
         if result.returncode != 0:
@@ -123,7 +108,6 @@ def import_single_file_with_lock(file_path, table_base_name, enable_pk_reset=Fal
 
     # --- 步骤 4: 恢复索引 ---
     try:
-        # === 计时: 恢复索引 ===
         t_start = time.time()
         restore_indexes(stored_index_sqls)
         metrics["time_restore_index"] = time.time() - t_start

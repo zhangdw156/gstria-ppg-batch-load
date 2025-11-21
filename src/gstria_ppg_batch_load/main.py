@@ -3,7 +3,8 @@ import sys
 import time
 import logging
 import click
-import swanlab  # 引入 swanlab
+import re  # 新增: 用于提取分区号数字
+import swanlab
 from pathlib import Path
 from .config import setup_logging
 from .utils import run_sql_command, run_command, build_psql_prefix
@@ -34,7 +35,7 @@ def run_main_logic(table, directory, clean, enable_pk_reset):
             "data_directory": str(directory),
             "clean_start": clean,
             "enable_pk_reset": enable_pk_reset,
-            "db_user": "postgres"  # 可以从 config 导入更多
+            "mode": mode_name
         }
     )
 
@@ -65,14 +66,15 @@ def run_main_logic(table, directory, clean, enable_pk_reset):
         # === 调用 Loader，获取结果和指标字典 ===
         res, metrics = import_single_file_with_lock(fpath, table, enable_pk_reset=enable_pk_reset)
 
-        # 计算单文件总处理时间
         file_process_time = time.time() - p_start
         copy_t = metrics.get("time_copy", 0.0)
+        partition_name = metrics.get("partition_name", "N/A")
 
         # ==========================
         # SwanLab Logging
         # ==========================
-        # 即使失败也记录部分耗时，status 标记为 0 或 1
+
+        # 基础耗时指标
         log_payload = {
             "Time/Total_Process": file_process_time,
             "Time/Drop_Index": metrics.get("time_drop_index", 0.0),
@@ -81,11 +83,29 @@ def run_main_logic(table, directory, clean, enable_pk_reset):
             "Status": 1 if res.returncode == 0 else 0
         }
 
-        # 如果开启了主键重置，记录该项时间
+        # 记录主键重置时间（如果在该模式下）
         if enable_pk_reset:
             log_payload["Time/Reset_PK"] = metrics.get("time_reset_pk", 0.0)
 
-        # 记录到 SwanLab，step 设为当前文件序号
+        # === 新增: 记录分区表信息 ===
+
+        # 1. 记录文本信息 (在 SwanLab 面板的 Media/Text 栏查看)
+        # 去掉表名的双引号以便阅读
+        clean_part_name = partition_name.replace('"', '')
+        log_payload["Info/Partition_Name"] = swanlab.Text(clean_part_name, caption=f"File: {fpath.name}")
+
+        # 2. 尝试提取数字后缀画折线图 (例如 performance_wa_005 -> 5)
+        # 这会在图表中形成一个漂亮的阶梯状曲线，显示数据分布的切换点
+        try:
+            # 匹配字符串末尾的数字
+            match = re.search(r'(\d+)$', clean_part_name)
+            if match:
+                part_idx = int(match.group(1))
+                log_payload["Info/Partition_Index"] = part_idx
+        except:
+            pass
+
+        # 发送日志
         swanlab.log(log_payload, step=i)
 
         if res.returncode == 0:
@@ -106,7 +126,6 @@ def run_main_logic(table, directory, clean, enable_pk_reset):
         cnt = int(res.stdout.strip()) if res.stdout.strip().isdigit() else 0
         logging.info(f"最终行数: {cnt}")
 
-        # 计算吞吐量
         throughput_total = int(cnt / real_time) if real_time > 0 else 0
         throughput_copy = int(cnt / total_copy_time) if total_copy_time > 0 else 0
 
@@ -115,7 +134,7 @@ def run_main_logic(table, directory, clean, enable_pk_reset):
             if total_copy_time > 0:
                 logging.info(f"纯COPY吞吐量 (Copy):  {throughput_copy} rows/s")
 
-        # 记录最终汇总指标到 SwanLab
+        # 记录汇总
         swanlab.log({
             "Summary/Total_Rows": cnt,
             "Summary/Throughput_Global": throughput_total,
@@ -126,20 +145,14 @@ def run_main_logic(table, directory, clean, enable_pk_reset):
     except Exception as e:
         logging.warning(f"统计失败: {e}")
 
-    # 结束实验
     swanlab.finish()
 
-
-# =========================================================
-# 定义两个 CLI 入口点 (保持不变)
-# =========================================================
 
 @click.command()
 @click.option('-f', '--table', required=True, help="目标表名")
 @click.option('-d', '--directory', required=True, type=click.Path(exists=True, file_okay=False), help="数据目录")
 @click.option('--clean/--no-clean', default=True, help="导入前清空表")
 def cli_standard(table, directory, clean):
-    """基础导入工具 (不重置主键)"""
     run_main_logic(table, directory, clean, enable_pk_reset=False)
 
 
@@ -148,5 +161,4 @@ def cli_standard(table, directory, clean):
 @click.option('-d', '--directory', required=True, type=click.Path(exists=True, file_okay=False), help="数据目录")
 @click.option('--clean/--no-clean', default=True, help="导入前清空表")
 def cli_collatec(table, directory, clean):
-    """加强版导入工具 (包含主键重置步骤)"""
     run_main_logic(table, directory, clean, enable_pk_reset=True)
