@@ -2,14 +2,25 @@ import subprocess
 import shlex
 import logging
 import os
-from .config import DB_USER, DB_NAME, CONTAINER_NAME
+from .config import DB_USER, DB_NAME, CONTAINER_NAME, PG_HOST, PG_PORT
 
 
 def build_psql_prefix(interactive=False):
+    """
+    构建 psql 命令前缀。
+
+    模式 A (Docker): docker exec -i <container> psql -U <user> -d <db>
+    模式 B (Direct): psql -h <host> -p <port> -U <user> -d <db>
+    """
     flags = "-i" if interactive else ""
+
     if CONTAINER_NAME:
+        # Docker 模式：通常直接在容器内连接，不需要指定 -h/-p (默认为 socket 或 localhost)
         return f"docker exec {flags} {CONTAINER_NAME} psql -U {DB_USER} -d {DB_NAME}"
-    return f"psql -U {DB_USER} -d {DB_NAME}"
+    else:
+        # 直连模式：必须指定 Host 和 Port
+        # 注意：-h 和 -p 参数放在前面比较规范
+        return f"psql -h {PG_HOST} -p {PG_PORT} -U {DB_USER} -d {DB_NAME}"
 
 
 def run_command(cmd, check=True, capture_output=False, env=None):

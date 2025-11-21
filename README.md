@@ -11,7 +11,7 @@ PostgreSQL 批量数据导入工具。专用于将目录下的 `.tbl` 文件批�
 ## 环境要求
 
 - Linux / macOS (本项目包含安装脚本)
-- Docker (目前只支持向本机的docker容器里的PG数据库导入)
+- Docker (可选)
 
 ## 快速开始
 
@@ -41,12 +41,23 @@ cp .env.example .env
 vim .env
 ```
 
-## 4. 配置说明：
+### 4. 配置说明
 
 ```bash
-# Postgres 连接配置
+# Postgres 连接配置 (通用)
 PG_USER=postgres
 PG_DB=postgres
+
+# 直连模式配置 (当 PG_CONTAINER_NAME 为空时生效)
+# 用于指定 psql 连接的主机和端口
+PG_HOST=localhost
+PG_PORT=5432
+
+# 运行模式选择:
+# 1. Docker 模式: 如果填写了容器名，工具将使用 `docker exec` 在容器内部执行 psql。
+#    此时 PG_HOST/PG_PORT 通常会被忽略(直接连接容器内数据库)。
+# 2. 直连模式: 如果留空，工具将直接调用宿主机的 `psql` 命令，
+#    并使用上面的 PG_HOST 和 PG_PORT 连接数据库。
 PG_CONTAINER_NAME=my-postgis-container
 ```
 
