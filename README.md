@@ -1,6 +1,6 @@
 # gstria-ppg-batch-load
 
-PostgreSQL 批量数据导入工具。专用于将目录下的 `.tbl` 文件批量导入 PG 数据库（geomesa-gt为sft创建的分区表），支持动态分区名解析与表锁定机制。
+PostgreSQL 批量数据导入工具。专用于将目录下的 `.tbl` 文件批量导入 PG 数据库（geomesa-gt为sft创建的视图），支持动态分区名解析与表锁定机制。
 
 ## 目录结构
 
