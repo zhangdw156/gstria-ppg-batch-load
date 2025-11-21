@@ -33,8 +33,6 @@ def run_command(cmd, check=True, capture_output=False, env=None):
     if DB_PASSWORD:
         run_env["PGPASSWORD"] = DB_PASSWORD
 
-
-
     try:
         result = subprocess.run(
             cmd,
