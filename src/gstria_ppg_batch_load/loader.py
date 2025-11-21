@@ -33,14 +33,25 @@ def import_single_file_with_lock(file_path, table_base_name, enable_pk_reset=Fal
     # 3. 导入 (Shell Pipeline + Timing)
     logging.info(f"      [Import] Shell 管道导入...")
     lock_tbl = f'"{table_base_name}_wa"'
-    copy_sql = f"COPY public.{partition_name}(fid,geom,dtg,taxi_id) FROM STDIN WITH (FORMAT text, DELIMITER E'|', NULL E'')"
+
+    # --- 修复点 1: 移除 E 前缀，简化引号嵌套 ---
+    # 原来: DELIMITER E'|', NULL E''
+    # 现在: DELIMITER '|', NULL ''
+    copy_sql = f"COPY public.{partition_name}(fid,geom,dtg,taxi_id) FROM STDIN WITH (FORMAT text, DELIMITER '|', NULL '')"
+
     safe_path = shlex.quote(str(file_path))
 
+    # --- 修复点 2: 使用 printf 替代 echo ---
+    # echo 在处理带有引号的字符串时，如果不小心可能会输出不符合预期的转义字符
+    # printf '%s\n' 是最安全的打印方式
     pipeline = (f"("
-                f"echo 'BEGIN;'; echo 'LOCK TABLE public.{lock_tbl} IN SHARE UPDATE EXCLUSIVE MODE;'; "
-                f"echo {shlex.quote(copy_sql)}; cat {safe_path}; "
+                f"printf '%s\\n' 'BEGIN;'; "
+                f"printf '%s\\n' 'LOCK TABLE public.{lock_tbl} IN SHARE UPDATE EXCLUSIVE MODE;'; "
+                f"printf '%s\\n' {shlex.quote(copy_sql)}; "
+                f"cat {safe_path}; "
                 f"if [ -n \"$(tail -c 1 {safe_path})\" ]; then echo ''; fi; "
-                f"echo '\\.'; echo 'COMMIT;'"
+                f"printf '%s\\n' '\\.'; "
+                f"printf '%s\\n' 'COMMIT;'"
                 f") | {build_psql_prefix(True)} -q -v ON_ERROR_STOP=1")
 
     # Shell 内部计时
